@@ -1,0 +1,50 @@
+[package]
+name = "snapit"
+version = "0.1.0"
+edition = "2021"
+description = "Professional server backup management CLI"
+license = "MIT"
+repository = "https://github.com/StackityHQ/snapit"
+readme = "README.md"
+keywords = ["backup", "postgresql", "s3", "devops", "cli"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+anyhow = "1"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-sdk-s3 = "1"
+aws-credential-types = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env", "color"] }
+colored = "2"
+comfy-table = "7"
+crc32fast = "1"
+ctrlc = "3"
+flate2 = "1"
+hex = "0.4"
+indicatif = "0.17"
+libc = "0.2"
+once_cell = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "process", "sync", "time"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+which = "6"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3

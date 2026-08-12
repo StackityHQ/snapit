@@ -1,0 +1,47 @@
+# Build
+/target/
+**/*.rs.bk
+
+# Local / production secrets — never commit
+/var/
+databases.json
+storage.json
+groups.json
+schedules.json
+config/local/
+*.local.json
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+*.pem
+*.key
+
+# Runtime data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/data/
+backups/
+*.sql
+*.sql.gz
+*.dump
+*.dump.gz
+
+# Logs
+*.log
+logs/
+
+# IDE / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Release artifacts
+dist/
+*.tar.gz
+*.sha256
