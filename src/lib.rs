@@ -1,5 +1,6 @@
 //! Snapit — professional server backup management CLI.
 
+pub mod backup;
 pub mod config;
 pub mod metadata;
 pub mod storage;
