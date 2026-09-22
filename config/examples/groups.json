@@ -1,0 +1,11 @@
+{
+  "groups": [
+    {
+      "name": "production",
+      "databases": ["samane", "deltakonkur"],
+      "storages": ["arvan"],
+      "retention": { "keep_last": 14 },
+      "enabled": true
+    }
+  ]
+}

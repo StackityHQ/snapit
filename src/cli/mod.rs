@@ -6,12 +6,12 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
 use colored::Colorize;
 use std::io::{stdin, Write};
+use std::path::PathBuf;
 
 use crate::backup::{delete_backup, run_backup, verify_record, BackupRequest};
+use crate::config::discover::DiscoveryOptions;
 use crate::config::paths::Paths;
-use crate::config::{
-    save_json, AppConfig, BackupGroup, DatabaseEntry, RetentionPolicy, StorageEntry,
-};
+use crate::config::{AppConfig, BackupGroup, DatabaseEntry, RetentionPolicy, StorageEntry};
 use crate::install::{install, sync_schedule_units, InstallOptions};
 use crate::logging::{self, follow_logs, read_logs};
 use crate::metadata::MetadataStore;
@@ -36,6 +36,15 @@ use ui::{
     propagate_version = true
 )]
 pub struct Cli {
+    /// Database config file (`database.json` or `databases.json`)
+    #[arg(long, global = true, value_name = "FILE", env = "SNAPIT_CONFIG")]
+    pub config: Option<PathBuf>,
+    /// Directory that contains Snapit JSON config files
+    #[arg(long, global = true, value_name = "DIR")]
+    pub config_dir: Option<PathBuf>,
+    /// Use /var/backupSystem instead of a project-local database.json
+    #[arg(long, global = true)]
+    pub global: bool,
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -262,30 +271,36 @@ pub enum ScheduleCmd {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCmd {
+    /// Create empty config files (project-local database.json by default)
+    Init {
+        /// Write to /var/backupSystem (or SNAPIT_HOME) instead of the project directory
+        #[arg(long)]
+        global: bool,
+    },
     Show,
     Paths,
 }
 
 pub async fn run(cli: Cli) -> Result<()> {
-    match cli.command {
+    match &cli.command {
         Commands::Install {
             binary,
             skip_user,
             with_examples,
         } => {
             install(InstallOptions {
-                binary_source: binary,
-                skip_user,
-                with_examples,
+                binary_source: binary.clone(),
+                skip_user: *skip_user,
+                with_examples: *with_examples,
             })?;
             return Ok(());
         }
         Commands::Logs { follow, job, lines } => {
-            let paths = Paths::resolve();
-            if follow {
+            let paths = resolve_paths(&cli);
+            if *follow {
                 follow_logs(&paths.log_dir)?;
             } else {
-                for line in read_logs(&paths.log_dir, job.as_deref(), lines)? {
+                for line in read_logs(&paths.log_dir, job.as_deref(), *lines)? {
                     println!("{line}");
                 }
             }
@@ -294,14 +309,14 @@ pub async fn run(cli: Cli) -> Result<()> {
         _ => {}
     }
 
-    let paths = Paths::resolve();
+    let paths = resolve_paths(&cli);
     let _ = paths.ensure_runtime_dirs();
     let _log_guard = logging::init(&paths.log_dir).unwrap_or_else(|_| logging::init_quiet());
 
     let cfg = AppConfig::load(&paths).with_context(|| {
         format!(
-            "failed to load config from {}\nHint: run snapit install or create databases.json / storage.json",
-            paths.config_dir.display()
+            "failed to load config from {}\nHint: run `snapit config init` or `snapit database add`, or place a database.json in this project",
+            paths.databases_file().display()
         )
     })?;
     let store = MetadataStore::open(&paths.metadata_db)?;
@@ -333,6 +348,23 @@ pub async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
+fn resolve_paths(cli: &Cli) -> Paths {
+    let prefer_global = cli.global
+        || matches!(
+            cli.command,
+            Commands::Config {
+                action: ConfigCmd::Init { global: true }
+            }
+        );
+    Paths::resolve_with(&DiscoveryOptions {
+        config_file: cli.config.clone(),
+        config_dir: cli.config_dir.clone(),
+        prefer_global,
+        cwd: None,
+        use_process_env: true,
+    })
+}
+
 fn cmd_status(cfg: &AppConfig, store: &MetadataStore) -> Result<()> {
     print_header("Backup System");
     let last = store.last_backup()?;
@@ -348,6 +380,12 @@ fn cmd_status(cfg: &AppConfig, store: &MetadataStore) -> Result<()> {
         None => ("never".into(), "-".into()),
     };
 
+    println!(
+        "{:<16} {} ({})",
+        "Config",
+        cfg.paths.databases_file().display(),
+        cfg.origin().as_label()
+    );
     println!(
         "{:<16} {}",
         "Databases",
@@ -544,7 +582,30 @@ fn cmd_restore(
 
 fn cmd_database(mut cfg: AppConfig, action: DatabaseCmd) -> Result<()> {
     match action {
-        DatabaseCmd::List => table_databases(&cfg.databases.databases),
+        DatabaseCmd::List => {
+            if cfg.databases.databases.is_empty() {
+                table_databases(&cfg.databases.databases);
+                if !cfg.databases_file_exists() {
+                    warn("No database configuration file found.");
+                    println!(
+                        "{}",
+                        "Create one with: snapit config init   or   snapit database add <name> --host …"
+                            .dimmed()
+                    );
+                    println!(
+                        "{}",
+                        "A database.json in this project directory is also picked up automatically."
+                            .dimmed()
+                    );
+                }
+            } else {
+                table_databases(&cfg.databases.databases);
+            }
+            println!(
+                "{}",
+                format!("Source: {}", cfg.paths.databases_file().display()).dimmed()
+            );
+        }
         DatabaseCmd::Add {
             name,
             host,
@@ -569,8 +630,16 @@ fn cmd_database(mut cfg: AppConfig, action: DatabaseCmd) -> Result<()> {
                 retention: keep_last.map(RetentionPolicy::keep_last),
             });
             cfg.validate()?;
-            save_json(&cfg.paths.databases_file(), &cfg.databases)?;
-            success(&format!("Added database [{name}]"));
+            let created = !cfg.databases_file_exists();
+            cfg.save_databases()?;
+            if created {
+                success(&format!(
+                    "Created {} and added database [{name}]",
+                    cfg.paths.databases_file().display()
+                ));
+            } else {
+                success(&format!("Added database [{name}]"));
+            }
         }
         DatabaseCmd::Remove { name, yes } => {
             if !yes && !confirm(&format!("Remove database [{name}] from config?"))? {
@@ -581,7 +650,7 @@ fn cmd_database(mut cfg: AppConfig, action: DatabaseCmd) -> Result<()> {
             if cfg.databases.databases.len() == before {
                 bail!("database not found: {name}");
             }
-            save_json(&cfg.paths.databases_file(), &cfg.databases)?;
+            cfg.save_databases()?;
             success(&format!("Removed database [{name}]"));
         }
     }
@@ -616,7 +685,7 @@ async fn cmd_storage(mut cfg: AppConfig, action: StorageCmd) -> Result<()> {
                 retention: None,
             });
             cfg.validate()?;
-            save_json(&cfg.paths.storage_file(), &cfg.storage)?;
+            cfg.save_storage()?;
             success(&format!("Added storage [{name}]"));
         }
         StorageCmd::Remove { name, yes } => {
@@ -628,7 +697,7 @@ async fn cmd_storage(mut cfg: AppConfig, action: StorageCmd) -> Result<()> {
             if cfg.storage.storages.len() == before {
                 bail!("storage not found: {name}");
             }
-            save_json(&cfg.paths.storage_file(), &cfg.storage)?;
+            cfg.save_storage()?;
             success(&format!("Removed storage [{name}]"));
         }
         StorageCmd::Test { name } => {
@@ -676,7 +745,7 @@ fn cmd_group(mut cfg: AppConfig, action: GroupCmd) -> Result<()> {
                 enabled: true,
             });
             cfg.validate()?;
-            save_json(&cfg.paths.groups_file(), &cfg.groups)?;
+            cfg.save_groups()?;
             success(&format!("Added group [{name}]"));
         }
         GroupCmd::Remove { name, yes } => {
@@ -688,7 +757,7 @@ fn cmd_group(mut cfg: AppConfig, action: GroupCmd) -> Result<()> {
             if cfg.groups.groups.len() == before {
                 bail!("group not found: {name}");
             }
-            save_json(&cfg.paths.groups_file(), &cfg.groups)?;
+            cfg.save_groups()?;
             success(&format!("Removed group [{name}]"));
         }
     }
@@ -748,16 +817,50 @@ fn cmd_schedule(mut cfg: AppConfig, action: ScheduleCmd) -> Result<()> {
 
 fn cmd_config(cfg: &AppConfig, action: ConfigCmd) -> Result<()> {
     match action {
+        ConfigCmd::Init { global: _ } => {
+            let created = !cfg.databases_file_exists();
+            cfg.init_files()?;
+            if created {
+                success(&format!("Created {}", cfg.paths.databases_file().display()));
+            } else {
+                success(&format!(
+                    "Config already present at {}",
+                    cfg.paths.databases_file().display()
+                ));
+            }
+            println!(
+                "{}",
+                format!("Origin: {}", cfg.origin().as_label()).dimmed()
+            );
+            println!(
+                "{}",
+                "Add a database with: snapit database add <name> --host … --database … --username … --password …"
+                    .dimmed()
+            );
+        }
         ConfigCmd::Show => {
             println!("{}", serde_json::to_string_pretty(&cfg.show_safe())?);
         }
         ConfigCmd::Paths => {
             print_header("Paths");
-            println!("{:<14} {}", "Config", cfg.paths.config_dir.display());
-            println!("{:<14} {}", "Data", cfg.paths.data_dir.display());
-            println!("{:<14} {}", "Backups", cfg.paths.backups_dir.display());
-            println!("{:<14} {}", "Metadata", cfg.paths.metadata_db.display());
-            println!("{:<14} {}", "Logs", cfg.paths.log_dir.display());
+            println!("{:<16} {}", "Origin", cfg.origin().as_label());
+            println!(
+                "{:<16} {}",
+                "Databases",
+                cfg.paths.databases_file().display()
+            );
+            println!("{:<16} {}", "Storage", cfg.paths.storage_file().display());
+            println!("{:<16} {}", "Groups", cfg.paths.groups_file().display());
+            println!(
+                "{:<16} {}",
+                "Schedules",
+                cfg.paths.schedules_file().display()
+            );
+            println!("{:<16} {}", "Config dir", cfg.paths.config_dir.display());
+            println!("{:<16} {}", "Data", cfg.paths.data_dir.display());
+            println!("{:<16} {}", "Backups", cfg.paths.backups_dir.display());
+            println!("{:<16} {}", "Metadata", cfg.paths.metadata_db.display());
+            println!("{:<16} {}", "Logs", cfg.paths.log_dir.display());
         }
     }
     Ok(())

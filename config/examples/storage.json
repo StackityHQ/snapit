@@ -1,0 +1,16 @@
+{
+  "storages": [
+    {
+      "name": "arvan",
+      "provider": "s3",
+      "region": "ir-thr-at1",
+      "bucket": "CHANGE_ME",
+      "access_key_id": "CHANGE_ME",
+      "secret_access_key": "CHANGE_ME",
+      "endpoint": "https://s3.ir-thr-at1.arvanstorage.ir",
+      "path_style": true,
+      "enabled": true,
+      "retention": { "keep_last": 14 }
+    }
+  ]
+}

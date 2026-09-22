@@ -1,0 +1,12 @@
+{
+  "schedules": [
+    {
+      "name": "nightly",
+      "when": "02:00",
+      "group": "production",
+      "storages": ["arvan"],
+      "retention": { "keep_last": 14 },
+      "enabled": true
+    }
+  ]
+}

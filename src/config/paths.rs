@@ -1,9 +1,10 @@
 //! Default filesystem paths for Snapit.
 
-use std::env;
 use std::path::PathBuf;
 
-/// Resolve runtime paths. Override with SNAPIT_HOME / SNAPIT_DATA / SNAPIT_LOG.
+use super::discover::{discover, ConfigOrigin, DiscoveredConfig, DiscoveryOptions};
+
+/// Resolve runtime paths. Discovery prefers a project-local `database.json`.
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub config_dir: PathBuf,
@@ -12,80 +13,87 @@ pub struct Paths {
     pub backups_dir: PathBuf,
     pub metadata_db: PathBuf,
     pub lock_dir: PathBuf,
+    pub databases_path: PathBuf,
+    pub storage_path: PathBuf,
+    pub groups_path: PathBuf,
+    pub schedules_path: PathBuf,
+    pub origin: ConfigOrigin,
 }
 
 impl Paths {
     pub fn resolve() -> Self {
-        let config_dir = env::var_os("SNAPIT_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/var/backupSystem"));
+        Self::resolve_with(&DiscoveryOptions::default())
+    }
 
-        let data_dir = env::var_os("SNAPIT_DATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/var/lib/backup-system"));
+    pub fn resolve_with(opts: &DiscoveryOptions) -> Self {
+        Self::from_discovered(discover(opts))
+    }
 
-        let log_dir = env::var_os("SNAPIT_LOG")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/var/log/backup-system"));
-
-        let backups_dir = data_dir.join("backups");
-        let metadata_db = data_dir.join("metadata.db");
-        let lock_dir = data_dir.join("locks");
+    pub fn from_discovered(found: DiscoveredConfig) -> Self {
+        let backups_dir = found.data_dir.join("backups");
+        let metadata_db = found.data_dir.join("metadata.db");
+        let lock_dir = found.data_dir.join("locks");
 
         Self {
-            config_dir,
-            data_dir,
-            log_dir,
+            config_dir: found.config_dir,
+            data_dir: found.data_dir,
+            log_dir: found.log_dir,
             backups_dir,
             metadata_db,
             lock_dir,
+            databases_path: found.databases_file,
+            storage_path: found.storage_file,
+            groups_path: found.groups_file,
+            schedules_path: found.schedules_file,
+            origin: found.origin,
         }
     }
 
     pub fn databases_file(&self) -> PathBuf {
-        self.config_dir.join("databases.json")
+        self.databases_path.clone()
     }
 
     pub fn storage_file(&self) -> PathBuf {
-        self.config_dir.join("storage.json")
+        self.storage_path.clone()
     }
 
     pub fn groups_file(&self) -> PathBuf {
-        self.config_dir.join("groups.json")
+        self.groups_path.clone()
     }
 
     pub fn schedules_file(&self) -> PathBuf {
-        self.config_dir.join("schedules.json")
+        self.schedules_path.clone()
     }
 
     pub fn ensure_runtime_dirs(&self) -> std::io::Result<()> {
-        std::fs::create_dir_all(&self.config_dir)?;
         std::fs::create_dir_all(&self.data_dir)?;
         std::fs::create_dir_all(&self.backups_dir)?;
         std::fs::create_dir_all(&self.lock_dir)?;
         std::fs::create_dir_all(&self.log_dir)?;
         Ok(())
     }
+
+    pub fn ensure_config_dir(&self) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.config_dir)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // Serialize env mutations across tests
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    use crate::config::discover::DiscoveryOptions;
+    use std::fs;
+    use tempfile::TempDir;
 
     #[test]
-    fn default_paths() {
-        let _g = ENV_LOCK.lock().unwrap();
-        // SAFETY: single-threaded under mutex for this test process section
-        unsafe {
-            env::remove_var("SNAPIT_HOME");
-            env::remove_var("SNAPIT_DATA");
-            env::remove_var("SNAPIT_LOG");
-        }
-        let p = Paths::resolve();
+    fn default_paths_without_project_file() {
+        let dir = TempDir::new().unwrap();
+        let p = Paths::resolve_with(&DiscoveryOptions {
+            cwd: Some(dir.path().to_path_buf()),
+            prefer_global: true,
+            use_process_env: false,
+            ..DiscoveryOptions::default()
+        });
         assert_eq!(p.config_dir, PathBuf::from("/var/backupSystem"));
         assert_eq!(p.data_dir, PathBuf::from("/var/lib/backup-system"));
         assert_eq!(p.log_dir, PathBuf::from("/var/log/backup-system"));
@@ -93,21 +101,28 @@ mod tests {
     }
 
     #[test]
-    fn override_paths() {
-        let _g = ENV_LOCK.lock().unwrap();
-        unsafe {
-            env::set_var("SNAPIT_HOME", "/tmp/snapit-cfg");
-            env::set_var("SNAPIT_DATA", "/tmp/snapit-data");
-            env::set_var("SNAPIT_LOG", "/tmp/snapit-log");
-        }
-        let p = Paths::resolve();
-        assert_eq!(p.config_dir, PathBuf::from("/tmp/snapit-cfg"));
-        assert_eq!(p.data_dir, PathBuf::from("/tmp/snapit-data"));
-        assert_eq!(p.log_dir, PathBuf::from("/tmp/snapit-log"));
-        unsafe {
-            env::remove_var("SNAPIT_HOME");
-            env::remove_var("SNAPIT_DATA");
-            env::remove_var("SNAPIT_LOG");
-        }
+    fn override_paths_via_config_dir() {
+        let dir = TempDir::new().unwrap();
+        let p = Paths::resolve_with(&DiscoveryOptions {
+            config_dir: Some(dir.path().to_path_buf()),
+            use_process_env: false,
+            ..DiscoveryOptions::default()
+        });
+        assert_eq!(p.config_dir, dir.path());
+        assert!(p.databases_file().starts_with(dir.path()));
+    }
+
+    #[test]
+    fn project_database_json_becomes_config_root() {
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("database.json"), "{\"databases\":[]}\n").unwrap();
+        let p = Paths::resolve_with(&DiscoveryOptions {
+            cwd: Some(dir.path().to_path_buf()),
+            use_process_env: false,
+            ..DiscoveryOptions::default()
+        });
+        assert_eq!(p.origin, ConfigOrigin::ProjectLocal);
+        assert_eq!(p.databases_file(), dir.path().join("database.json"));
+        assert_eq!(p.data_dir, dir.path().join(".snapit"));
     }
 }

@@ -12,4 +12,5 @@ pub mod schedule;
 pub mod storage;
 pub mod util;
 
+pub use config::discover::{ConfigOrigin, DiscoveryOptions};
 pub use config::paths::Paths;

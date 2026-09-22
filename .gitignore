@@ -4,10 +4,12 @@
 
 # Local / production secrets — never commit
 /var/
+database.json
 databases.json
 storage.json
 groups.json
 schedules.json
+.snapit/
 config/local/
 *.local.json
 .env
@@ -17,6 +19,10 @@ secrets/
 credentials/
 *.pem
 *.key
+
+# Keep secret-free templates
+!config/examples/
+!config/examples/**
 
 # Runtime data
 *.db
