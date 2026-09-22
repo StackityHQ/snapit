@@ -148,12 +148,14 @@ main() {
   green "Snapit installed successfully"
   echo
   echo "Next steps:"
-  echo "  1. Edit ${CONFIG_DIR}/databases.json  (chmod 600)"
-  echo "  2. Edit ${CONFIG_DIR}/storage.json"
-  echo "  3. snapit database list"
-  echo "  4. snapit storage test <name>"
+  echo "  1. snapit config init"
+  echo "  2. snapit database add <name> --host … --database … --username … --password …"
+  echo "  3. snapit storage add <name> --region … --bucket … --endpoint …"
+  echo "  4. snapit database list"
   echo "  5. snapit backup database <name>"
   echo "  6. snapit schedule sync"
+  echo
+  echo "A database.json in the current project directory is used automatically."
 }
 
 main "$@"

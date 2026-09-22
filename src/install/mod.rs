@@ -73,10 +73,10 @@ ExecStart=/usr/local/bin/snapit status
     println!("✓ Snapit installed");
     println!();
     println!("Next steps:");
-    println!("  1. Edit {}/databases.json", paths.config_dir.display());
-    println!("  2. Edit {}/storage.json", paths.config_dir.display());
-    println!("  3. snapit database list");
-    println!("  4. snapit storage test arvan");
+    println!("  1. snapit config init                  (or place database.json in a project)");
+    println!("  2. snapit database add <name> --host … --database … --username … --password …");
+    println!("  3. snapit storage add <name> --region … --bucket … --endpoint …");
+    println!("  4. snapit database list");
     println!("  5. snapit backup database <name>");
     println!("  6. snapit schedule add …");
     Ok(())
