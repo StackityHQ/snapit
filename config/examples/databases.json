@@ -1,0 +1,26 @@
+{
+  "databases": [
+    {
+      "name": "samane",
+      "driver": "postgres",
+      "host": "127.0.0.1",
+      "port": 5432,
+      "database": "postgres",
+      "username": "postgres",
+      "password": "CHANGE_ME",
+      "enabled": true,
+      "retention": { "keep_last": 14 }
+    },
+    {
+      "name": "deltakonkur",
+      "driver": "postgres",
+      "host": "127.0.0.1",
+      "port": 5432,
+      "database": "deltakonkur_db",
+      "username": "postgres",
+      "password": "CHANGE_ME",
+      "enabled": true,
+      "retention": { "keep_last": 14 }
+    }
+  ]
+}

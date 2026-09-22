@@ -47,12 +47,13 @@ snapit
 
 | Purpose | Path |
 |---------|------|
-| Config | `/var/backupSystem` |
-| Data / backups / SQLite | `/var/lib/backup-system` |
-| Logs | `/var/log/backup-system` |
+| Project config | `./database.json` (discovered from the current project) |
+| Global config | `/var/backupSystem` |
+| Data / backups / SQLite | `/var/lib/backup-system` or `./.snapit` for project-local configs |
+| Logs | `/var/log/backup-system` or `./.snapit/logs` |
 | Binary | `/usr/local/bin/snapit` |
 
-Override with `SNAPIT_HOME`, `SNAPIT_DATA`, `SNAPIT_LOG`.
+Override with `--config`, `--config-dir`, `SNAPIT_HOME`, `SNAPIT_DATA`, `SNAPIT_LOG`.
 
 ---
 
@@ -106,7 +107,29 @@ The installer:
 
 All configuration is human-readable JSON. **Do not commit production credentials.**
 
-### Databases — `/var/backupSystem/databases.json`
+Snapit does **not** require `/var/backupSystem/databases.json`. It discovers database configuration in this order:
+
+1. `--config <file>` / `SNAPIT_CONFIG` / `SNAPIT_DATABASES`
+2. `--config-dir <dir>`
+3. A project-local `database.json` or `databases.json` (also `snapit/` or `.snapit/`), walking up to the git root — so `cd laravel-test` just works
+4. `$SNAPIT_HOME/databases.json` when that file exists
+5. `/var/backupSystem/databases.json` when that file exists
+
+If nothing exists yet, the CLI can create the file:
+
+```bash
+# In a project directory (creates ./database.json)
+snapit config init
+snapit database add app --host 127.0.0.1 --database app --username app --password secret
+
+# Or write to the global location
+snapit config init --global
+snapit --global database add app --host 127.0.0.1 --database app --username app --password secret
+```
+
+`snapit config paths` shows which file is active.
+
+### Databases — `database.json` / `databases.json`
 
 ```json
 {
@@ -137,9 +160,9 @@ All configuration is human-readable JSON. **Do not commit production credentials
 }
 ```
 
-Add as many databases as you need — nothing is hardcoded.
+Add as many databases as you need — nothing is hardcoded. A single database object (without the wrapping `"databases"` array) is also accepted.
 
-### Storage — `/var/backupSystem/storage.json`
+### Storage — `storage.json` (same directory as the database file)
 
 ```json
 {
@@ -160,7 +183,7 @@ Add as many databases as you need — nothing is hardcoded.
 }
 ```
 
-### Groups — `/var/backupSystem/groups.json`
+### Groups — `groups.json`
 
 ```json
 {
@@ -176,7 +199,7 @@ Add as many databases as you need — nothing is hardcoded.
 }
 ```
 
-### Schedules — `/var/backupSystem/schedules.json`
+### Schedules — `schedules.json`
 
 ```json
 {
@@ -211,9 +234,11 @@ Example templates (no secrets): `config/examples/`.
 
 ```bash
 snapit status
+snapit config init          # create database.json in this project
 snapit config show          # secrets redacted
-snapit config paths
+snapit config paths         # which file was discovered
 snapit database list
+snapit database add app --host 127.0.0.1 --database app --username app --password secret
 snapit storage list
 snapit storage test arvan
 snapit group list
@@ -406,7 +431,7 @@ snapit backup verify <id>
 
 | Symptom | Fix |
 |---------|-----|
-| `failed to load config` | Create JSON under `SNAPIT_HOME` / run `snapit install` |
+| `failed to load config` | Run `snapit config init`, `snapit database add`, or place `database.json` in the project |
 | `pg_dump not found` | `apt install postgresql-client` |
 | Auth failures | Check host/port/user; password never echoed — edit JSON |
 | Upload failed | `snapit storage test <name>`; check endpoint + path_style |
