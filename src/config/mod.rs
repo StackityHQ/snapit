@@ -1,5 +1,6 @@
 //! Configuration loading and validation.
 
+pub mod discover;
 pub mod paths;
 
 use anyhow::{bail, Context, Result};
@@ -7,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
+use discover::ConfigOrigin;
 use paths::Paths;
 
 /// Top-level application configuration loaded from JSON files.
@@ -132,21 +134,22 @@ impl RetentionPolicy {
 }
 
 impl AppConfig {
+    pub fn empty(paths: Paths) -> Self {
+        Self {
+            databases: DatabasesConfig::default(),
+            storage: StorageConfig::default(),
+            groups: GroupsConfig::default(),
+            schedules: SchedulesConfig::default(),
+            paths,
+        }
+    }
+
+    /// Load configuration from discovered files. Missing files become empty lists.
     pub fn load(paths: &Paths) -> Result<Self> {
-        let databases = load_json(&paths.databases_file())
-            .with_context(|| format!("loading {}", paths.databases_file().display()))?;
-        let storage = load_json(&paths.storage_file())
-            .with_context(|| format!("loading {}", paths.storage_file().display()))?;
-        let groups = if paths.groups_file().exists() {
-            load_json(&paths.groups_file())?
-        } else {
-            GroupsConfig::default()
-        };
-        let schedules = if paths.schedules_file().exists() {
-            load_json(&paths.schedules_file())?
-        } else {
-            SchedulesConfig::default()
-        };
+        let databases = load_optional_databases(&paths.databases_file())?;
+        let storage = load_optional(&paths.storage_file())?.unwrap_or_default();
+        let groups = load_optional(&paths.groups_file())?.unwrap_or_default();
+        let schedules = load_optional(&paths.schedules_file())?.unwrap_or_default();
 
         let cfg = Self {
             databases,
@@ -157,6 +160,53 @@ impl AppConfig {
         };
         cfg.validate()?;
         Ok(cfg)
+    }
+
+    pub fn databases_file_exists(&self) -> bool {
+        self.paths.databases_file().is_file()
+    }
+
+    /// Persist databases to the discovered file, creating it if needed.
+    pub fn save_databases(&self) -> Result<()> {
+        self.paths.ensure_config_dir()?;
+        save_json(&self.paths.databases_file(), &self.databases)
+    }
+
+    pub fn save_storage(&self) -> Result<()> {
+        self.paths.ensure_config_dir()?;
+        save_json(&self.paths.storage_file(), &self.storage)
+    }
+
+    pub fn save_groups(&self) -> Result<()> {
+        self.paths.ensure_config_dir()?;
+        save_json(&self.paths.groups_file(), &self.groups)
+    }
+
+    pub fn save_schedules(&self) -> Result<()> {
+        self.paths.ensure_config_dir()?;
+        save_json(&self.paths.schedules_file(), &self.schedules)
+    }
+
+    /// Create empty JSON config files at the discovered location.
+    pub fn init_files(&self) -> Result<()> {
+        self.paths.ensure_config_dir()?;
+        if !self.paths.databases_file().exists() {
+            save_json(&self.paths.databases_file(), &self.databases)?;
+        }
+        if !self.paths.storage_file().exists() {
+            save_json(&self.paths.storage_file(), &self.storage)?;
+        }
+        if !self.paths.groups_file().exists() {
+            save_json(&self.paths.groups_file(), &self.groups)?;
+        }
+        if !self.paths.schedules_file().exists() {
+            save_json(&self.paths.schedules_file(), &self.schedules)?;
+        }
+        Ok(())
+    }
+
+    pub fn origin(&self) -> &ConfigOrigin {
+        &self.paths.origin
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -291,6 +341,8 @@ impl AppConfig {
             })
             .collect();
         serde_json::json!({
+            "origin": self.paths.origin.as_label(),
+            "databases_file": self.paths.databases_file(),
             "config_dir": self.paths.config_dir,
             "data_dir": self.paths.data_dir,
             "log_dir": self.paths.log_dir,
@@ -307,6 +359,40 @@ pub fn load_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
     let value: T =
         serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
     Ok(value)
+}
+
+pub fn load_optional<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> Result<Option<T>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    Ok(Some(load_json(path)?))
+}
+
+/// Accept `{ "databases": [...] }`, a bare array, or a single database object.
+pub fn load_optional_databases(path: &Path) -> Result<DatabasesConfig> {
+    if !path.is_file() {
+        return Ok(DatabasesConfig::default());
+    }
+    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    parse_databases_json(&raw).with_context(|| format!("parse {}", path.display()))
+}
+
+pub fn parse_databases_json(raw: &str) -> Result<DatabasesConfig> {
+    let value: serde_json::Value = serde_json::from_str(raw)?;
+    if value.get("databases").is_some() {
+        return Ok(serde_json::from_value(value)?);
+    }
+    if value.is_array() {
+        return Ok(DatabasesConfig {
+            databases: serde_json::from_value(value)?,
+        });
+    }
+    if value.is_object() {
+        return Ok(DatabasesConfig {
+            databases: vec![serde_json::from_value(value)?],
+        });
+    }
+    bail!("database config must be an object or array");
 }
 
 pub fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
@@ -328,6 +414,7 @@ pub fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     fn sample_db(name: &str, database: &str) -> DatabaseEntry {
@@ -384,16 +471,25 @@ mod tests {
         assert!(cfg.storages[0].path_style);
     }
 
+    fn test_paths(root: PathBuf) -> Paths {
+        Paths {
+            config_dir: root.clone(),
+            data_dir: root.clone(),
+            log_dir: root.clone(),
+            backups_dir: root.join("backups"),
+            metadata_db: root.join("m.db"),
+            lock_dir: root.join("locks"),
+            databases_path: root.join("database.json"),
+            storage_path: root.join("storage.json"),
+            groups_path: root.join("groups.json"),
+            schedules_path: root.join("schedules.json"),
+            origin: ConfigOrigin::Uninitialized,
+        }
+    }
+
     #[test]
     fn validate_rejects_duplicate_db() {
-        let paths = Paths {
-            config_dir: PathBuf::from("/tmp"),
-            data_dir: PathBuf::from("/tmp"),
-            log_dir: PathBuf::from("/tmp"),
-            backups_dir: PathBuf::from("/tmp"),
-            metadata_db: PathBuf::from("/tmp/x.db"),
-            lock_dir: PathBuf::from("/tmp"),
-        };
+        let paths = test_paths(PathBuf::from("/tmp"));
         let cfg = AppConfig {
             databases: DatabasesConfig {
                 databases: vec![sample_db("a", "db1"), sample_db("a", "db2")],
@@ -409,14 +505,7 @@ mod tests {
     #[test]
     fn show_safe_redacts_secrets() {
         let dir = TempDir::new().unwrap();
-        let paths = Paths {
-            config_dir: dir.path().to_path_buf(),
-            data_dir: dir.path().to_path_buf(),
-            log_dir: dir.path().to_path_buf(),
-            backups_dir: dir.path().join("backups"),
-            metadata_db: dir.path().join("m.db"),
-            lock_dir: dir.path().join("locks"),
-        };
+        let paths = test_paths(dir.path().to_path_buf());
         let cfg = AppConfig {
             databases: DatabasesConfig {
                 databases: vec![sample_db("samane", "postgres")],
@@ -454,5 +543,41 @@ mod tests {
         assert_eq!(p, back);
     }
 
-    use std::path::PathBuf;
+    #[test]
+    fn parse_single_database_object() {
+        let json = r#"{
+            "name": "app",
+            "host": "127.0.0.1",
+            "port": 5432,
+            "database": "app",
+            "username": "app",
+            "password": "secret"
+        }"#;
+        let cfg = parse_databases_json(json).unwrap();
+        assert_eq!(cfg.databases.len(), 1);
+        assert_eq!(cfg.databases[0].name, "app");
+    }
+
+    #[test]
+    fn parse_bare_database_array() {
+        let json = r#"[{
+            "name": "app",
+            "host": "127.0.0.1",
+            "port": 5432,
+            "database": "app",
+            "username": "app",
+            "password": "secret"
+        }]"#;
+        let cfg = parse_databases_json(json).unwrap();
+        assert_eq!(cfg.databases.len(), 1);
+    }
+
+    #[test]
+    fn load_missing_files_is_empty() {
+        let dir = TempDir::new().unwrap();
+        let paths = test_paths(dir.path().to_path_buf());
+        let cfg = AppConfig::load(&paths).unwrap();
+        assert!(cfg.databases.databases.is_empty());
+        assert!(cfg.storage.storages.is_empty());
+    }
 }
